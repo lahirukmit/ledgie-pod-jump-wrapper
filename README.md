@@ -21,6 +21,7 @@ Every day we exec into different ledgie pods (`ledgie`, `ledgie-fcm`, `ledgie-pa
 
 - `podjump` - main command
 - `install.sh` - installer
+- `uninstall.sh` - removes only `podjump` from `~/.local/bin`
 
 ## Prerequisites
 
@@ -54,6 +55,12 @@ After install, either:
 source ~/.zshrc
 ```
 
+Fallback if shell is not refreshed yet:
+
+```bash
+~/.local/bin/podjump
+```
+
 ## Usage
 
 ```bash
@@ -76,3 +83,20 @@ Keys:
 - arrow keys or type to filter, then `Enter` to select
 - pick `<< back: ... >>` to return to the previous step
 - `Esc` or `Ctrl+C` to quit without executing anything
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+`uninstall.sh` removes only `~/.local/bin/podjump`.
+
+It does **not** remove or modify:
+
+- `bash`
+- `kubectl`
+- `fzf`
+- kube access/contexts in your kubeconfig
+- RBAC permissions
+- optional tools: `kubectx`, `kubens`

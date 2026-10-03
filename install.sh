@@ -94,3 +94,9 @@ printf '  2) run: source "%s"\n' "$ZSHRC"
 printf '\n'
 printf 'Then run:\n'
 printf '  %s\n' "$TOOL_NAME"
+printf '\n'
+printf 'Fallback if command is not found yet:\n'
+printf '  %s\n' "${TARGET_SCRIPT}"
+printf '\n'
+printf 'To uninstall later:\n'
+printf '  ./uninstall.sh\n'
