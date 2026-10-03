@@ -15,6 +15,7 @@ Every day we exec into different ledgie pods (`ledgie`, `ledgie-fcm`, `ledgie-pa
 - You pick the context, namespace, instance, pod, and container from arrow-key menus (`fzf`), so there's nothing to type and nothing to mistype.
 - It finds pods by label (`app.kubernetes.io/component=api-server` plus `app.kubernetes.io/instance=<instance>`), so you always land on the pod for the instance you chose.
 - It passes `--context` and `-n` explicitly on every `kubectl` call and **never changes your active kube context or namespace**. When you exit the pod, your terminal is still pointing where it was before.
+- It is **menu-only by design**. There are no flags or arguments, so a stale value from shell history or a copied command can never skip a menu and send you to the wrong cluster. Before it execs, it shows the cluster, namespace, pod, and container and waits for you to confirm.
 
 ## Files
 
@@ -42,7 +43,7 @@ cd ledgie-pod-jump-wrapper
 ./install.sh
 ```
 
-The installer copies `podjump` to `~/.local/bin` and makes sure that directory is on your `PATH` in `~/.zshrc`. If you installed the older `ledgie-access` / `access` version, it removes those too.
+The installer copies `podjump` to `~/.local/bin` and makes sure that directory is on your `PATH` in `~/.zshrc`.
 
 After install, either:
 
@@ -55,44 +56,23 @@ source ~/.zshrc
 
 ## Usage
 
-Show help:
-
-```bash
-podjump --help
-```
-
-Interactive flow:
-
 ```bash
 podjump
 ```
 
-Target a specific instance:
+That's the only command. It takes no arguments.
 
-```bash
-podjump ledgie
-podjump ledgie-fcm
-```
+1. **Cluster:** pick a kube context.
+2. **Namespace:** pick a namespace in that cluster.
+3. **Instance:** pick a ledgie instance (`ledgie`, `ledgie-fcm`, `ledgie-paper`, ...). Only instances with `app.kubernetes.io/component=api-server` pods are listed.
+4. **Pod:** pick a running pod. This step is skipped when there's only one.
+5. **Container:** pick a container. This step is skipped when there's only one.
+6. **Confirm:** check the summary, then type `y` to exec, `b` to go back, or anything else to quit.
 
-Run one command instead of opening shell:
+You land in `bash`, or in `sh` if the image has no `bash`.
 
-```bash
-podjump ledgie hostname
-```
+Keys:
 
-Override namespace/context:
-
-```bash
-podjump -n default ledgie
-```
-
-## Notes
-
-- default component selector is `app.kubernetes.io/component=api-server`
-- if multiple pods/containers match, a picker menu is shown
-- in a picker, choose `<< back: ... >>` to return to the previous step
-- if container image does not include `bash`, run:
-
-```bash
-podjump ledgie sh
-```
+- arrow keys or type to filter, then `Enter` to select
+- pick `<< back: ... >>` to return to the previous step
+- `Esc` or `Ctrl+C` to quit without executing anything
