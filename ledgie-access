@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# Interactive kubectl exec helper for app.kubernetes.io labels.
+# Uses current kubectx/kubens defaults unless overridden by flags.
+
+set -euo pipefail
+
+usage() {
+  local prog
+  prog="$(basename "$0")"
+  cat <<'EOF' | sed "s/__PROG__/${prog}/g"
+Usage:
+  __PROG__ [options] [instance] [command...]
+  __PROG__ [options] [instance] -- [command...]
+
+Examples:
+  __PROG__
+  __PROG__ ledgie
+  __PROG__ ledgie hostname
+  __PROG__ -n default ledgie-fcm -- bash
+  __PROG__ --pick-context --pick-namespace ledgie-paper
+
+Options:
+  -c, --context <name>      Kubernetes context (default: current context)
+  -n, --namespace <name>    Kubernetes namespace (default: current namespace or "default")
+  -i, --instance <value>    app.kubernetes.io/instance value (skip instance picker)
+      --component <value>   app.kubernetes.io/component value (default: api-server)
+  -C, --container <name>    Container name (skip container picker)
+      --pick-context        Force context picker via fzf
+      --no-pick-context     Skip context picker and use current/--context
+      --pick-namespace      Choose namespace via fzf
+  -h, --help                Show help
+
+Notes:
+  - Requires: kubectl, fzf
+  - If multiple pods match, you pick one with arrow keys.
+  - If multiple containers exist in a pod, you pick one with arrow keys.
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+pick_one() {
+  local prompt="$1"
+  local value
+  value="$(
+    fzf \
+      --height=40% \
+      --layout=reverse \
+      --border \
+      --cycle \
+      --prompt="${prompt}> "
+  )"
+  [[ -n "$value" ]] || die "selection cancelled"
+  printf '%s\n' "$value"
+}
+
+parse_context_namespace_from_kubeconfig() {
+  local context_name="$1"
+  kubectl config view -o "jsonpath={.contexts[?(@.name==\"${context_name}\")].context.namespace}" 2>/dev/null || true
+}
+
+pick_context() {
+  contexts=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && contexts+=("$line")
+  done < <(kubectl config get-contexts -o name)
+  [[ ${#contexts[@]} -gt 0 ]] || die "no contexts found in kubeconfig"
+  CONTEXT="$(printf '%s\n' "${contexts[@]}" | pick_one "context")"
+}
+
+pick_namespace() {
+  namespaces=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && namespaces+=("$line")
+  done < <(kubectl --context "$CONTEXT" get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  [[ ${#namespaces[@]} -gt 0 ]] || die "no namespaces found in context: $CONTEXT"
+  NAMESPACE="$(printf '%s\n' "${namespaces[@]}" | pick_one "namespace")"
+}
+
+require_cmd kubectl
+require_cmd fzf
+
+CONTEXT=""
+NAMESPACE=""
+INSTANCE=""
+COMPONENT="api-server"
+CONTAINER=""
+PICK_CONTEXT_MODE="auto"
+PICK_NAMESPACE="false"
+CONTEXT_SET_BY_FLAG="false"
+NAMESPACE_SET_BY_FLAG="false"
+INSTANCE_SET_BY_FLAG="false"
+
+CMD=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--context)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CONTEXT="$2"
+      CONTEXT_SET_BY_FLAG="true"
+      shift 2
+      ;;
+    -n|--namespace)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      NAMESPACE="$2"
+      NAMESPACE_SET_BY_FLAG="true"
+      shift 2
+      ;;
+    -i|--instance)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      INSTANCE="$2"
+      INSTANCE_SET_BY_FLAG="true"
+      shift 2
+      ;;
+    --component)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      COMPONENT="$2"
+      shift 2
+      ;;
+    -C|--container)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CONTAINER="$2"
+      shift 2
+      ;;
+    --pick-context)
+      PICK_CONTEXT_MODE="force"
+      shift
+      ;;
+    --no-pick-context)
+      PICK_CONTEXT_MODE="never"
+      shift
+      ;;
+    --pick-namespace)
+      PICK_NAMESPACE="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      if [[ $# -gt 0 ]]; then
+        CMD=("$@")
+      fi
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      if [[ -z "$INSTANCE" ]]; then
+        INSTANCE="$1"
+        shift
+      else
+        CMD=("$@")
+        break
+      fi
+      ;;
+  esac
+done
+
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  CMD=("bash")
+fi
+
+if [[ -z "$CONTEXT" ]]; then
+  CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+fi
+[[ -n "$CONTEXT" ]] || die "no kubernetes context found. Run kubectx first or pass --context."
+
+CONTEXT_INTERACTIVE="false"
+if [[ "$PICK_CONTEXT_MODE" == "force" || ( "$PICK_CONTEXT_MODE" == "auto" && "$CONTEXT_SET_BY_FLAG" != "true" ) ]]; then
+  pick_context
+  CONTEXT_INTERACTIVE="true"
+fi
+
+if [[ "$NAMESPACE_SET_BY_FLAG" != "true" && ( "$PICK_NAMESPACE" == "true" || "$CONTEXT_INTERACTIVE" == "true" ) ]]; then
+  pick_namespace
+fi
+
+while :; do
+  if [[ -z "$NAMESPACE" ]]; then
+    NAMESPACE="$(parse_context_namespace_from_kubeconfig "$CONTEXT")"
+  fi
+  [[ -n "$NAMESPACE" ]] || NAMESPACE="default"
+
+  if [[ -z "$INSTANCE" ]]; then
+    instances=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && instances+=("$line")
+    done < <(
+      kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods \
+        -l "app.kubernetes.io/component=${COMPONENT}" \
+        -o jsonpath='{range .items[*]}{.metadata.labels.app\.kubernetes\.io/instance}{"\n"}{end}' \
+        | awk 'NF' \
+        | sort -u
+    )
+
+    [[ ${#instances[@]} -gt 0 ]] || die "no instances found for component=${COMPONENT} in ${CONTEXT}/${NAMESPACE}"
+
+    if [[ "$CONTEXT_INTERACTIVE" == "true" ]]; then
+      INSTANCE_CHOICE="$(
+        {
+          printf '<< back: context >>\n'
+          printf '%s\n' "${instances[@]}"
+        } | pick_one "instance"
+      )"
+      if [[ "$INSTANCE_CHOICE" == "<< back: context >>" ]]; then
+        pick_context
+        if [[ "$NAMESPACE_SET_BY_FLAG" != "true" ]]; then
+          pick_namespace
+        fi
+        continue
+      fi
+      INSTANCE="$INSTANCE_CHOICE"
+    else
+      INSTANCE="$(printf '%s\n' "${instances[@]}" | pick_one "instance")"
+    fi
+  fi
+
+  selector="app.kubernetes.io/component=${COMPONENT},app.kubernetes.io/instance=${INSTANCE}"
+
+  pods=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && pods+=("$line")
+  done < <(
+    kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods \
+      -l "$selector" \
+      --field-selector=status.phase=Running \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+      | awk 'NF'
+  )
+
+  [[ ${#pods[@]} -gt 0 ]] || die "no running pods found for selector: ${selector} in ${CONTEXT}/${NAMESPACE}"
+
+  if [[ ${#pods[@]} -eq 1 ]]; then
+    POD="${pods[0]}"
+  else
+    if [[ "$INSTANCE_SET_BY_FLAG" == "true" ]]; then
+      POD="$(printf '%s\n' "${pods[@]}" | pick_one "pod")"
+    else
+      POD_CHOICE="$(
+        {
+          printf '<< back: instance >>\n'
+          printf '%s\n' "${pods[@]}"
+        } | pick_one "pod"
+      )"
+      if [[ "$POD_CHOICE" == "<< back: instance >>" ]]; then
+        INSTANCE=""
+        continue
+      fi
+      POD="$POD_CHOICE"
+    fi
+  fi
+
+  if [[ -z "$CONTAINER" ]]; then
+    containers=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && containers+=("$line")
+    done < <(
+      kubectl --context "$CONTEXT" -n "$NAMESPACE" get pod "$POD" \
+        -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}' \
+        | awk 'NF'
+    )
+
+    if [[ ${#containers[@]} -gt 1 ]]; then
+      if [[ "$INSTANCE_SET_BY_FLAG" == "true" ]]; then
+        CONTAINER="$(printf '%s\n' "${containers[@]}" | pick_one "container")"
+      else
+        CONTAINER_CHOICE="$(
+          {
+            printf '<< back: pod >>\n'
+            printf '%s\n' "${containers[@]}"
+          } | pick_one "container"
+        )"
+        if [[ "$CONTAINER_CHOICE" == "<< back: pod >>" ]]; then
+          continue
+        fi
+        CONTAINER="$CONTAINER_CHOICE"
+      fi
+    elif [[ ${#containers[@]} -eq 1 ]]; then
+      CONTAINER="${containers[0]}"
+    fi
+  fi
+
+  break
+done
+
+echo "context=${CONTEXT} namespace=${NAMESPACE} pod=${POD} container=${CONTAINER:-<default>} cmd=${CMD[*]}"
+
+if [[ -n "$CONTAINER" ]]; then
+  exec kubectl --context "$CONTEXT" -n "$NAMESPACE" exec -it "$POD" -c "$CONTAINER" -- "${CMD[@]}"
+else
+  exec kubectl --context "$CONTEXT" -n "$NAMESPACE" exec -it "$POD" -- "${CMD[@]}"
+fi
